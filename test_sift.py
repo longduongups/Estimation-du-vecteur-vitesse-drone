@@ -37,8 +37,6 @@ def process_and_visualize(p1_name, p2_name, idx):
             good.append(m)
 
     # 5. Création de l'image de visualisation
-    # On dessine seulement les 50 meilleurs pour que ce soit lisible, ou 'good' pour tous
-# Modifier le flag pour voir TOUS les points, même ceux sans liens
     img_matches = cv2.drawMatches(
         img1, kp1, 
         img2, kp2, 

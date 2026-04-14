@@ -191,8 +191,7 @@ for idx_r, current_R in enumerate(R_VALUES):
     for ax in axes.flatten():
         ax.axhline(0, color='red', linestyle='--', alpha=0.6) # LIGNE ROUGE À ZÉRO
         ax.grid(True, alpha=0.3)
-        
-        # Ajout manuel du composant de marge dans la légende
+    
         handles, labels = ax.get_legend_handles_labels()
         if 'Marges d\'erreurs' not in labels:
             handles.append(marge_legend)

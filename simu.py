@@ -12,7 +12,6 @@ FOCALE = 0.035         # f = 35mm
 DIST_OBJECTIF = 500.0
 # Paramètres de vol
 INTENSITE_DELTA = 0.005
-
 N_POINTS_MUR = 2500
 EPSILON_ANGLE = 1e-9   # Seuil pour basculer Arc -> Droite
 # =====================================================
