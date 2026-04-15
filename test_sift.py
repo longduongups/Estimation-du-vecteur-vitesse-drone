@@ -2,56 +2,49 @@ import cv2
 import numpy as np
 import os
 
-# Configuration des dossiers
 folder = "img_test_sift"
-paires = [('p00.png', 'p01.png'), ('p10.png', 'p11.png'), ('p20.png', 'p21.png')]
+paires = [('p00.png', 'p01.png'), ('p10.png', 'p11.png'), ('p20.png', 'p21.png'), ('p30.png', 'p31.png'), ('p40.png', 'p41.png')]
 
-def process_and_visualize(p1_name, p2_name, idx):
-    # Chemins complets
-    path1 = os.path.join(folder, p1_name)
-    path2 = os.path.join(folder, p2_name)
+# Dictionnaire des algorithmes à tester
+algorithmes = {
+    "SIFT": cv2.SIFT_create(),
+    "AKAZE": cv2.AKAZE_create(),
+    "ORB": cv2.ORB_create(nfeatures=5000) # On force ORB à chercher jusqu'à 5000 points
+}
 
-    # 1. Chargement
-    img1 = cv2.imread(path1)
-    img2 = cv2.imread(path2)
-    if img1 is None or img2 is None:
-        print(f"Erreur de lecture : {p1_name} ou {p2_name}")
+def process_pair(p1_name, p2_name, algo_name, algo):
+    img1 = cv2.imread(os.path.join(folder, p1_name), cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread(os.path.join(folder, p2_name), cv2.IMREAD_GRAYSCALE)
+    
+    # Détection et calcul des descripteurs
+    kp1, des1 = algo.detectAndCompute(img1, None)
+    kp2, des2 = algo.detectAndCompute(img2, None)
+    
+    if des1 is None or des2 is None:
         return 0
 
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-
-    # 2. SIFT
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(gray1, None)
-    kp2, des2 = sift.detectAndCompute(gray2, None)
-
-    # 3. Matching
-    bf = cv2.BFMatcher()
+    # Matching (NORM_HAMMING pour ORB/AKAZE, NORM_L2 pour SIFT)
+    norm = cv2.NORM_HAMMING if algo_name in ["ORB", "AKAZE"] else cv2.NORM_L2
+    bf = cv2.BFMatcher(norm)
     matches = bf.knnMatch(des1, des2, k=2)
-
-    # 4. Filtre de Ratio (Lowe)
-    good = []
+    
+    # Filtre de Lowe
+    good_matches = []
     for m, n in matches:
         if m.distance < 0.75 * n.distance:
-            good.append(m)
+            good_matches.append(m)
+            
+    return len(good_matches)
 
-    # 5. Création de l'image de visualisation
-    img_matches = cv2.drawMatches(
-        img1, kp1, 
-        img2, kp2, 
-        good[:100],
-        None, 
-        flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS # Affiche les cercles SIFT
-    )
+# Lancement des tests
+print(f"{'Algo':<10} | {'Paire 0':<10} | {'Paire 1':<10} | {'Paire 2':<10} | {'Paire 3':<10} | {'Paire 4':<10} | {'Moyenne K'}")
+print("-" * 80)
 
-    # 6. Sauvegarde du résultat
-    output_name = f"resultat_paire_{idx}.png"
-    cv2.imwrite(os.path.join(folder, output_name), img_matches)
+for algo_name, algo in algorithmes.items():
+    resultats = []
+    for p1, p2 in paires:
+        n_matches = process_pair(p1, p2, algo_name, algo)
+        resultats.append(n_matches)
     
-    return len(good)
-
-# Lancement
-for i, (p1, p2) in enumerate(paires):
-    n = process_and_visualize(p1, p2, i)
-    print(f"Paire {i} traitée : {n} points trouvés. Image sauvegardée.")
+    moyenne = int(np.mean(resultats))
+    print(f"{algo_name:<10} | {resultats[0]:<10} | {resultats[1]:<10} | {resultats[2]:<10} | {resultats[3]:<10} | {resultats[4]:<10} | {moyenne}")
