@@ -32,7 +32,7 @@ FRACTIONS_PIXEL = np.linspace(0.0, 0.99, 20)
 def run_study_1_gaussian(sigma_px, fixed_R):
     n_trials = 2000
     err_v = {s: [] for s in SCENARIOS}
-    err_R = {s: [] for s in SCENARIOS} 
+    err_theta = {s: [] for s in SCENARIOS}
     
     for _ in range(n_trials):
         i1_px_gt = np.random.uniform(-400, 400)
@@ -59,33 +59,37 @@ def run_study_1_gaussian(sigma_px, fixed_R):
             elif scenario == 'Erreurs_D': D1 += noise_D1; D2 += noise_D2
             elif scenario == 'Combine': i1 += noise_i1; i2 += noise_i2; D1 += noise_D1; D2 += noise_D2
 
-            x1_est = -i1 * D1 / F
-            x2_est = -i2 * D2 / F
-            
-            lateral_diff = (x1_est - x2_est) - (V_REAL * DT)
-            
-            if abs(lateral_diff) < 1e-7: 
+            # --- CALCUL AVEC LA FORMULE DE L'IMAGE ---
+            if abs(D2 - D1) < 1e-8:
                 R_est = np.inf
+                theta_est = 0.0
+                x1_est, x2_est = -i1 * D1 / F, -i2 * D2 / F
+                v_est = np.sqrt((x1_est - x2_est)**2 + (D1 - D2)**2) / DT
             else:
-                R_est = (D1 * V_REAL * DT) / lateral_diff
+                num_R = (i1 * D1)**2 - (i2 * D2)**2 + (F**2) * (D1**2 - D2**2)
+                den_R = 2 * (F**2) * (D2 - D1)
+                R_est = num_R / den_R
                 
-            v_est = np.sqrt((x1_est - x2_est)**2 + (D1 - D2)**2) / DT
-            
-            err_v[scenario].append(v_est - V_REAL)
-            
-            if np.isinf(fixed_R):
-                err_R[scenario].append(1.0 / R_est if not np.isinf(R_est) else 0.0)
-            else:
-                err_R[scenario].append(R_est - fixed_R)
+                num_sin = (i2 * D2 * (D1 + R_est) - i1 * D1 * (D2 + R_est)) * F
+                den_sin = (i1 * D1)**2 + (F**2) * (D1 + R_est)**2
+                
+                val_sin = np.clip(num_sin / den_sin, -1.0, 1.0)
+                theta_est = np.arcsin(val_sin)
+                v_est = abs((R_est / DT) * theta_est)
+            # -----------------------------------------
+
+            # VALEUR ABSOLUE ICI
+            err_v[scenario].append(abs(v_est - V_REAL))
+            err_theta[scenario].append(abs(np.degrees(theta_est - theta_gt))) 
             
     stats_v = {s: (np.median(err_v[s]), np.percentile(err_v[s], 25), np.percentile(err_v[s], 75)) for s in SCENARIOS}
-    stats_R = {s: (np.median(err_R[s]), np.percentile(err_R[s], 25), np.percentile(err_R[s], 75)) for s in SCENARIOS}
-    return stats_v, stats_R
+    stats_theta = {s: (np.median(err_theta[s]), np.percentile(err_theta[s], 25), np.percentile(err_theta[s], 75)) for s in SCENARIOS}
+    return stats_v, stats_theta
 
 def run_study_2_quantization(fraction_px, fixed_R):
     n_trials = 2000
     err_v = {s: [] for s in SCENARIOS}
-    err_R = {s: [] for s in SCENARIOS}
+    err_theta = {s: [] for s in SCENARIOS}
     
     for _ in range(n_trials):
         base_pixel = np.random.randint(-400, 400)
@@ -114,88 +118,89 @@ def run_study_2_quantization(fraction_px, fixed_R):
             elif scenario == 'Erreurs_D': D1 += err_D1; D2 += err_D2
             elif scenario == 'Combine': i1 -= err_i1; i2 -= err_i2; D1 += err_D1; D2 += err_D2
 
-            x1_est = -i1 * D1 / F
-            x2_est = -i2 * D2 / F
-            
-            lateral_diff = (x1_est - x2_est) - (V_REAL * DT)
-            
-            if abs(lateral_diff) < 1e-7: 
+            # --- CALCUL AVEC LA FORMULE DE L'IMAGE ---
+            if abs(D2 - D1) < 1e-8:
                 R_est = np.inf
+                theta_est = 0.0
+                x1_est, x2_est = -i1 * D1 / F, -i2 * D2 / F
+                v_est = np.sqrt((x1_est - x2_est)**2 + (D1 - D2)**2) / DT
             else:
-                R_est = (D1 * V_REAL * DT) / lateral_diff
+                num_R = (i1 * D1)**2 - (i2 * D2)**2 + (F**2) * (D1**2 - D2**2)
+                den_R = 2 * (F**2) * (D2 - D1)
+                R_est = num_R / den_R
                 
-            v_est = np.sqrt((x1_est - x2_est)**2 + (D1 - D2)**2) / DT
+                num_sin = (i2 * D2 * (D1 + R_est) - i1 * D1 * (D2 + R_est)) * F
+                den_sin = (i1 * D1)**2 + (F**2) * (D1 + R_est)**2
+                
+                val_sin = np.clip(num_sin / den_sin, -1.0, 1.0)
+                theta_est = np.arcsin(val_sin)
+                v_est = abs((R_est / DT) * theta_est)
+            # -----------------------------------------
             
-            err_v[scenario].append(v_est - V_REAL)
-            
-            if np.isinf(fixed_R):
-                err_R[scenario].append(1.0 / R_est if not np.isinf(R_est) else 0.0)
-            else:
-                err_R[scenario].append(R_est - fixed_R)
+            # VALEUR ABSOLUE ICI
+            err_v[scenario].append(abs(v_est - V_REAL))
+            err_theta[scenario].append(abs(np.degrees(theta_est - theta_gt)))
             
     stats_v = {s: (np.median(err_v[s]), np.percentile(err_v[s], 25), np.percentile(err_v[s], 75)) for s in SCENARIOS}
-    stats_R = {s: (np.median(err_R[s]), np.percentile(err_R[s], 25), np.percentile(err_R[s], 75)) for s in SCENARIOS}
-    return stats_v, stats_R
+    stats_theta = {s: (np.median(err_theta[s]), np.percentile(err_theta[s], 25), np.percentile(err_theta[s], 75)) for s in SCENARIOS}
+    return stats_v, stats_theta
 
 # =====================================================================
 # --- 3. EXÉCUTION ET AFFICHAGE ---
 # =====================================================================
 
-# Patch global pour indiquer la légende des marges
 marge_legend = mpatches.Patch(color='grey', alpha=0.3, label='Marges d\'erreurs')
 
 for idx_r, current_R in enumerate(R_VALUES):
     print(f"Calculs en cours pour {R_LABELS[idx_r]}...")
     
     data_v_gauss = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
-    data_R_gauss = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
+    data_t_gauss = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
     for p in NOISE_LEVELS:
-        sv, sr = run_study_1_gaussian(p, current_R)
+        sv, st = run_study_1_gaussian(p, current_R)
         for s in SCENARIOS:
             data_v_gauss[s]['med'].append(sv[s][0]); data_v_gauss[s]['q25'].append(sv[s][1]); data_v_gauss[s]['q75'].append(sv[s][2])
-            data_R_gauss[s]['med'].append(sr[s][0]); data_R_gauss[s]['q25'].append(sr[s][1]); data_R_gauss[s]['q75'].append(sr[s][2])
+            data_t_gauss[s]['med'].append(st[s][0]); data_t_gauss[s]['q25'].append(st[s][1]); data_t_gauss[s]['q75'].append(st[s][2])
 
     data_v_quant = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
-    data_R_quant = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
+    data_t_quant = {s: {'med':[], 'q25':[], 'q75':[]} for s in SCENARIOS}
     for frac in FRACTIONS_PIXEL:
-        sv, sr = run_study_2_quantization(frac, current_R)
+        sv, st = run_study_2_quantization(frac, current_R)
         for s in SCENARIOS:
             data_v_quant[s]['med'].append(sv[s][0]); data_v_quant[s]['q25'].append(sv[s][1]); data_v_quant[s]['q75'].append(sv[s][2])
-            data_R_quant[s]['med'].append(sr[s][0]); data_R_quant[s]['q25'].append(sr[s][1]); data_R_quant[s]['q75'].append(sr[s][2])
+            data_t_quant[s]['med'].append(st[s][0]); data_t_quant[s]['q25'].append(st[s][1]); data_t_quant[s]['q75'].append(st[s][2])
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.canvas.manager.set_window_title(f"Simulation - {R_LABELS[idx_r]}")
     fig.suptitle(f"Erreur d'estimation : {R_LABELS[idx_r]}", fontsize=18, fontweight='bold')
 
     for s in SCENARIOS:
-        # Courbes médianes
+        # Courbes
         axes[0,0].plot(NOISE_LEVELS, data_v_gauss[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
-        axes[0,1].plot(NOISE_LEVELS, data_R_gauss[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
+        axes[0,1].plot(NOISE_LEVELS, data_t_gauss[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
         axes[1,0].plot(FRACTIONS_PIXEL, data_v_quant[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
-        axes[1,1].plot(FRACTIONS_PIXEL, data_R_quant[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
+        axes[1,1].plot(FRACTIONS_PIXEL, data_t_quant[s]['med'], marker=STYLE[s]['marker'], color=STYLE[s]['color'], label=STYLE[s]['label'])
         
-        # Zones 25% - 75%
+        # Marges
         axes[0,0].fill_between(NOISE_LEVELS, data_v_gauss[s]['q25'], data_v_gauss[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
-        axes[0,1].fill_between(NOISE_LEVELS, data_R_gauss[s]['q25'], data_R_gauss[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
+        axes[0,1].fill_between(NOISE_LEVELS, data_t_gauss[s]['q25'], data_t_gauss[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
         axes[1,0].fill_between(FRACTIONS_PIXEL, data_v_quant[s]['q25'], data_v_quant[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
-        axes[1,1].fill_between(FRACTIONS_PIXEL, data_R_quant[s]['q25'], data_R_quant[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
+        axes[1,1].fill_between(FRACTIONS_PIXEL, data_t_quant[s]['q25'], data_t_quant[s]['q75'], color=STYLE[s]['color'], alpha=0.15)
 
-    # Cosmétique et Ligne de Référence (0)
-    axes[0,0].set_title("Vitesse (Gauss)"); axes[0,0].set_ylabel("Erreur norme vitesse (est - reel) [m/s]")
-    axes[1,0].set_title("Vitesse (Discrétisation)"); axes[1,0].set_ylabel("Erreur norme vitesse (est - reel) [m/s]")
+    # Cosmétique : Mises à jour avec "Erreur absolue"
+    axes[0,0].set_title("Vitesse (Gauss)"); axes[0,0].set_ylabel("Erreur absolue vitesse [m/s]")
+    axes[1,0].set_title("Vitesse (Discrétisation)"); axes[1,0].set_ylabel("Erreur absolue vitesse [m/s]")
     
-    label_r = "Courbure 1/R [m⁻¹]" if np.isinf(current_R) else "Rayon R [m]"
-    axes[0,1].set_title(f"{label_r} (Gauss)"); axes[0,1].set_ylabel(f"Erreur {label_r} (est - reel)")
-    axes[1,1].set_title(f"{label_r} (Discrétisation)"); axes[1,1].set_ylabel(f"Erreur {label_r} (est - reel)")
+    axes[0,1].set_title(f"Orientation \u03B8 (Gauss)"); axes[0,1].set_ylabel(f"Erreur absolue orientation [°]")
+    axes[1,1].set_title(f"Orientation \u03B8 (Discrétisation)"); axes[1,1].set_ylabel(f"Erreur absolue orientation [°]")
 
     for ax in axes.flatten():
-        ax.axhline(0, color='red', linestyle='--', alpha=0.6) # LIGNE ROUGE À ZÉRO
+        ax.axhline(0, color='red', linestyle='--', alpha=0.6) # Ligne de référence parfaite (0 erreur)
         ax.grid(True, alpha=0.3)
         handles, labels = ax.get_legend_handles_labels()
         if 'Marges d\'erreurs' not in labels:
             handles.append(marge_legend)
             labels.append(marge_legend.get_label())
-            
         ax.legend(handles=handles, labels=labels, fontsize='small')
 
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
