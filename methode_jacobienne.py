@@ -38,18 +38,16 @@ def run_study_1_gaussian(sigma_px, fixed_R):
     err_theta = {s: [] for s in SCENARIOS}
     
     for _ in range(n_trials):
-        # 1. Génération de N points répartis sur le capteur
+    
         i1_px_gt = np.random.uniform(-400, 400, N_POINTS)
         i1_m_gt = i1_px_gt * PIXEL_SIZE
         D1_gt = np.full(N_POINTS, D1_GT) 
 
-        # 2. Cinématique vraie du drone
         V_z_gt = V_REAL
         V_x_gt = 0.0
         omega_y_gt = 0.0 if np.isinf(fixed_R) else V_REAL / fixed_R
         theta_gt = omega_y_gt * DT
 
-        # 3. Vitesse apparente exacte des pixels (Flux Optique Continu)
         i_dot_gt = (F / D1_gt) * V_x_gt - (i1_m_gt / D1_gt) * V_z_gt + (F + (i1_m_gt**2)/F) * omega_y_gt
 
         # Bruits gaussiens
@@ -64,7 +62,7 @@ def run_study_1_gaussian(sigma_px, fixed_R):
 
             if scenario == 'Erreurs_i' or scenario == 'Combine':
                 i1_meas += noise_i1
-                # Le delta_i mesuré subit le bruit de la frame 1 et de la frame 2
+                
                 delta_i_meas = (i1_m_gt + delta_i_gt + noise_i2) - (i1_m_gt + noise_i1)
             else:
                 delta_i_meas = delta_i_gt
@@ -119,7 +117,6 @@ def run_study_2_quantization(fraction_px, fixed_R):
         i2_m_gt = i1_m_gt + delta_i_m_gt
         i2_px_gt = i2_m_gt / PIXEL_SIZE
 
-        # Erreurs de discrétisation matricielles
         di1 = np.abs(i1_px_gt) - np.floor(np.abs(i1_px_gt))
         di2 = np.abs(i2_px_gt) - np.floor(np.abs(i2_px_gt))
         sign1 = np.where(i1_px_gt != 0, np.sign(i1_px_gt), 1)
@@ -155,7 +152,6 @@ def run_study_2_quantization(fraction_px, fixed_R):
                 theta_est = V_est_vec[2] * DT
             except:
                 v_est, theta_est = 0.0, 0.0
-            # -----------------------------------------------
             
             err_v[scenario].append(abs(v_est - V_REAL))
             err_theta[scenario].append(abs(np.degrees(theta_est - theta_gt)))
