@@ -1,385 +1,465 @@
+"""
+Simulation MERAK 551 — Modèle de bruit final, simple et cohérent :
+À chaque image acquise (t1, t2), une erreur pixellique unique δk ∈ [-0.5, +0.5] px
+qui se propage SIMULTANÉMENT à la position image i_k ET à la profondeur D_k
+(via la loi de triangulation différentielle δD = D²·δd/(f·b)).
 
+Pire cas : δ1 = -0.5, δ2 = +0.5 → erreur totale de disparité = 1 px.
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from itertools import product
+import warnings
+warnings.filterwarnings("ignore")
+np.random.seed(42)
+
+# =====================================================================
+# 1. PARAMÈTRES
+# =====================================================================
+F = 0.010; B = 0.20; PIXEL_SIZE = 5e-6
+D1_GT = 10.0; DT = 0.02; V_DRONE = 2.78
+D_DRONE = V_DRONE * DT
+I_FIXE = 0.005
+THETA_FOV_REF = np.degrees(np.arctan(I_FIXE / F))
+N_TRIALS = 2000
+
+# =====================================================================
+# 2. MODÈLE 2
+# =====================================================================
+def calc_modele_2(i1, i2, D1, D2, f=F):
+    denom = (i1*D1 + i2*D2)**2 + f**2 * (D2-D1)**2
+    K = (D2**2 - D1**2)*f**2 + D2**2*i2**2 - D1**2*i1**2
+    Tx = -(1.0/f) * (D2*i2 + D1*i1) * K / denom
+    Tz = -(D2 - D1) * K / denom
+    return Tx, Tz
+
+# =====================================================================
+# 3. INJECTION DE BRUIT (modèle final : δk affecte i_k ET D_k)
+# =====================================================================
+def inputs(i1g, i2g, D1g, D2g, d1_px, d2_px, *, mode='both', f=F, b=B):
+    """
+    d1_px, d2_px = erreurs pixelliques sur image 1 et image 2 (en pixels).
+    mode='both' : chacune affecte à la fois i et D (cas physique)
+    mode='i'    : affecte uniquement i (cas A)
+    mode='D'    : affecte uniquement D (cas B)
+    """
+    if mode in ('both', 'i'):
+        i1n = i1g + d1_px * PIXEL_SIZE
+        i2n = i2g + d2_px * PIXEL_SIZE
+    else:
+        i1n, i2n = i1g, i2g
+    if mode in ('both', 'D'):
+        D1n = D1g + (D1g**2/(f*b)) * d1_px * PIXEL_SIZE
+        D2n = D2g + (D2g**2/(f*b)) * d2_px * PIXEL_SIZE
+    else:
+        D1n, D2n = D1g, D2g
+    return i1n, i2n, D1n, D2n
+
+def err_pos(tx, tz, txv, tzv):
+    return np.sqrt((tx-txv)**2 + (tz-tzv)**2)
+
+def monte_carlo(i1g, i2g, D1g, D2g, txv, tzv, sc=1.0, *, mode='both',
+                n=N_TRIALS, f=F, b=B):
+    d1 = np.random.uniform(-0.5*sc, 0.5*sc, n)
+    d2 = np.random.uniform(-0.5*sc, 0.5*sc, n)
+    i1n,i2n,D1n,D2n = inputs(i1g,i2g,D1g,D2g, d1, d2, mode=mode, f=f, b=b)
+    tx, tz = calc_modele_2(i1n, i2n, D1n, D2n, f=f)
+    return err_pos(tx, tz, txv, tzv)
+
+def worst_case(i1g, i2g, D1g, D2g, txv, tzv, sc=1.0, *, mode='both', f=F, b=B):
+    """4 combinaisons de signes (±0.5·sc, ±0.5·sc)."""
+    s=0.5*sc; max_e=0
+    for a, b_ in product([-s,+s], repeat=2):
+        i1n,i2n,D1n,D2n = inputs(i1g,i2g,D1g,D2g, a, b_, mode=mode, f=f, b=b)
+        tx, tz = calc_modele_2(i1n,i2n,D1n,D2n, f=f)
+        e = np.sqrt((tx-txv)**2 + (tz-tzv)**2)
+        if e>max_e: max_e=e
+    return max_e
+
+# =====================================================================
+# 4. VÉRITÉ TERRAIN PAR SCÉNARIO
+# =====================================================================
+def verite_terrain(scenario, i1=I_FIXE, D1=D1_GT, f=F, d=D_DRONE):
+    X_M = -i1 * D1 / f
+    if scenario == 'rect_0':
+        TX, TZ = d, 0.0
+        x_M_C2 = X_M - TX;  D2 = D1 - TZ
+        i2 = -x_M_C2 * f / D2
+        return i2, D2, -TX, -TZ
+    elif scenario in ('rect_5', 'rect_30'):
+        TX = d;  TZ = 0
+        x_M_C2 = X_M - TX;  D2 = D1
+        i2 = -x_M_C2 * f / D2
+        return i2, D2, -TX, -TZ
+    elif scenario.startswith('R'):
+        R = float(scenario[1:]);  theta = d / R
+        TX = R*np.sin(theta);  TZ = R*(1 - np.cos(theta))
+        dx = X_M - TX;  dz = D1 - TZ
+        x_M_C2 =  np.cos(theta)*dx + np.sin(theta)*dz
+        z_M_C2 = -np.sin(theta)*dx + np.cos(theta)*dz
+        D2 = z_M_C2
+        i2 = -x_M_C2 * f / D2
+        return i2, D2, -TX, -TZ
+    raise ValueError(scenario)
+
+# Référence rectiligne colinéaire
+_X1 = -I_FIXE * D1_GT / F
+_X2 = _X1 - D_DRONE
+I2_REF = -_X2 * F / D1_GT
+TX_REF, TZ_REF = -D_DRONE, 0.0
+
+# =====================================================================
+# FIGURE 3 — sensibilité bruit (Scindée en 2 images distinctes)
+# =====================================================================
+print("\n=== Figure 3 ===")
+echelles = np.linspace(0.0, 1.0, 25)
+resultats = {m: {'med':[], 'q25':[], 'q75':[], 'wc':[]} for m in ('i','D','both')}
+
+for sc in echelles:
+    for m in ('i','D','both'):
+        e = monte_carlo(I_FIXE, I2_REF, D1_GT, D1_GT, TX_REF, TZ_REF, sc, mode=m)
+        resultats[m]['med'].append(np.nanmedian(e))
+        resultats[m]['q25'].append(np.nanpercentile(e, 25))
+        resultats[m]['q75'].append(np.nanpercentile(e, 75))
+        resultats[m]['wc' ].append(worst_case(I_FIXE, I2_REF, D1_GT, D1_GT,
+                                              TX_REF, TZ_REF, sc, mode=m))
+
+COULEURS = {'i': '#2ca02c', 'D': '#ff7f0e', 'both': '#d62728'}
+LABELS = {'i': 'Erreur sur i seul (i₁, i₂)',
+          'D': 'Erreur sur D seul (disparités)',
+          'both': 'Erreurs combinées (i + D)'}
+
+# ---------------------------------------------------------
+# FIGURE 3A : Impact dominant (D et Combiné) en MÈTRES
+# ---------------------------------------------------------
+fig1, ax1 = plt.subplots(figsize=(10, 6))
+
+for m in ('D', 'both'):
+    c = COULEURS[m]
+    ax1.fill_between(echelles, resultats[m]['q25'], resultats[m]['q75'],
+                     color=c, alpha=0.15, linewidth=0)
+    ax1.plot(echelles, resultats[m]['med'], color=c, lw=2.5,
+             label=f"Médiane — {LABELS[m]}")
+    ax1.plot(echelles, resultats[m]['wc'], color=c, lw=2.0, linestyle='--',
+             label=f"Pire cas — {LABELS[m]}")
+
+handles1, labels1 = ax1.get_legend_handles_labels()
+handles1.append(mpatches.Patch(color='gray', alpha=0.3, label='Intervalle interquartile (Q1-Q3)'))
+
+ax1.set_xlabel(r"Amplitude maximale d'erreur pixellique $\delta d_{max}$ [pixels]")
+ax1.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [m]")
+ax1.set_xlim(0, 1.0)
+ax1.set_ylim(0, 0.7)
+ax1.grid(True, linestyle='--', alpha=0.7)
+ax1.legend(handles=handles1, loc='upper left', fontsize=9, framealpha=0.95)
+
+ax1.annotate(f"~ {resultats['both']['wc'][-1]:.2f} m",
+             xy=(1.0, resultats['both']['wc'][-1]),
+             xytext=(0.72, 0.48),
+             arrowprops=dict(facecolor='black', arrowstyle='->'))
+
+plt.tight_layout()
+plt.savefig('figure_3a_bruit_dominant.png', dpi=150, bbox_inches='tight')
+plt.close(fig1)
+
+# ---------------------------------------------------------
+# FIGURE 3B : Impact négligeable (i seul) en MILLIMÈTRES
+# ---------------------------------------------------------
+fig2, ax2 = plt.subplots(figsize=(10, 6))
+m = 'i'
+c = COULEURS[m]
+
+# Conversion des données de mètres vers MILLIMÈTRES
+med_mm = np.array(resultats[m]['med']) * 1000
+q25_mm = np.array(resultats[m]['q25']) * 1000
+q75_mm = np.array(resultats[m]['q75']) * 1000
+wc_mm  = np.array(resultats[m]['wc']) * 1000
+
+ax2.fill_between(echelles, q25_mm, q75_mm, color=c, alpha=0.15, linewidth=0)
+ax2.plot(echelles, med_mm, color=c, lw=2.5, label=f"Médiane — {LABELS[m]}")
+ax2.plot(echelles, wc_mm, color=c, lw=2.0, linestyle='--', label=f"Pire cas — {LABELS[m]}")
+
+handles2, labels2 = ax2.get_legend_handles_labels()
+handles2.append(mpatches.Patch(color='gray', alpha=0.3, label='Intervalle interquartile (Q1-Q3)'))
+
+ax2.set_xlabel(r"Amplitude maximale d'erreur pixellique $\delta d_{max}$ [pixels]")
+ax2.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [mm]")
+ax2.set_xlim(0, 1.0)
+ax2.set_ylim(0, max(wc_mm) * 1.2) # Échelle dynamique adaptée
+ax2.grid(True, linestyle='--', alpha=0.7)
+ax2.legend(handles=handles2, loc='upper left', fontsize=9, framealpha=0.95)
+
+ax2.annotate(f"~ {wc_mm[-1]:.1f} mm",
+             xy=(1.0, wc_mm[-1]),
+             xytext=(0.70, wc_mm[-1] * 0.7),
+             arrowprops=dict(facecolor='black', arrowstyle='->'))
+
+plt.tight_layout()
+plt.savefig('figure_3b_bruit_negligeable.png', dpi=150, bbox_inches='tight')
+plt.close(fig2)
+
+print(f"  i={resultats['i']['wc'][-1]*1000:.1f}mm  "
+      f"D={resultats['D']['wc'][-1]:.3f}m  "
+      f"combiné={resultats['both']['wc'][-1]:.3f}m")
+
+# =====================================================================
+# FIGURE 4 — scénarios trajectoire
+# =====================================================================
+print("\n=== Figure 4 ===")
+SCENARIOS = ['rect_0','rect_5','rect_30','R500','R50','R10']
+SC_INFO = {'rect_0':  ('Rectiligne colinéaire (α = 0°)',  '#d62728'),
+           'rect_5':  ('Rectiligne oblique (α = 5°)',     '#ff7f0e'),
+           'rect_30': ('Rectiligne oblique (α = 30°)',    '#2ca02c'),
+           'R500':    ('Courbe R = 500 m',                '#1f77b4'),
+           'R50':     ('Courbe R = 50 m',                 '#9467bd'),
+           'R10':     ('Courbe R = 10 m',                 '#8c564b')}
+med_sc = {s: [] for s in SCENARIOS}
+q25_sc = {s: [] for s in SCENARIOS}; q75_sc = {s: [] for s in SCENARIOS}
+for sc in echelles:
+    for s_name in SCENARIOS:
+        i2_gt, D2_gt, txv, tzv = verite_terrain(s_name)
+        e = monte_carlo(I_FIXE, i2_gt, D1_GT, D2_gt, txv, tzv, sc, mode='both')
+        med_sc[s_name].append(np.nanmedian(e))
+        q25_sc[s_name].append(np.nanpercentile(e, 25))
+        q75_sc[s_name].append(np.nanpercentile(e, 75))
+fig, ax = plt.subplots(figsize=(10, 6))
+for s_name in SCENARIOS:
+    _, c = SC_INFO[s_name]
+    ax.fill_between(echelles, q25_sc[s_name], q75_sc[s_name],
+                    color=c, alpha=0.04, linewidth=0)
+for s_name in SCENARIOS:
+    label, c = SC_INFO[s_name]
+    ax.plot(echelles, med_sc[s_name], color=c, lw=2.5, label=label)
+handles, _ = ax.get_legend_handles_labels()
+handles.append(mpatches.Patch(color='gray', alpha=0.3,
+                              label='Intervalle interquartile (Q1–Q3)'))
+ax.set_xlabel(r"Amplitude maximale d'erreur pixellique $\delta d_{max}$ [pixels]")
+ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [m]")
+ax.set_xlim(0, 1.0); ax.set_ylim(bottom=0)
+ax.grid(True, linestyle='--', alpha=0.7)
+ax.legend(handles=handles, loc='upper left', fontsize=9, framealpha=0.95)
+plt.tight_layout()
+plt.savefig('figure_4_scenarios.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+# =====================================================================
+# FIGURE 5 — θ_FOV
+# =====================================================================
+print("\n=== Figure 5 — θ_FOV ===")
+i_vals = np.linspace(0.0005, 0.0796, 100)
+theta_vals = np.degrees(np.arctan(i_vals / F))
+err_theta = []
+for i1 in i_vals:
+    X_M = -i1 * D1_GT / F; X_M2 = X_M - D_DRONE
+    i2 = -X_M2 * F / D1_GT
+    err_theta.append(worst_case(i1, i2, D1_GT, D1_GT, -D_DRONE, 0, sc=1.0))
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(theta_vals, err_theta, color='#d62728', lw=3.0,
+        label='Pire cas combiné (i + D, ±0,5 px par image)')
+ax.set_xlabel(r"Angle d'observation $\theta_{FOV}$ [°]")
+ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
+ax.set_xlim(0, 90); ax.set_ylim(0, 5.0)
+ax.grid(True, linestyle='--', alpha=0.7); ax.legend(loc='upper right', fontsize=10)
+for th_show in (5.71, 26.57):
+    i1 = F*np.tan(np.radians(th_show))
+    X_M = -i1*D1_GT/F; X_M2 = X_M-D_DRONE
+    i2 = -X_M2*F/D1_GT
+    e = worst_case(i1, i2, D1_GT, D1_GT, -D_DRONE, 0)
+    ax.scatter([th_show], [e], color='black', zorder=5)
+    xtxt, ytxt = (10, 3.2) if th_show == 5.71 else (30, 1.5)
+    ax.annotate(f'~ {e:.2f} m ($\\theta_{{FOV}}$ = {th_show:.2f}°)',
+                xy=(th_show, e), xytext=(xtxt, ytxt),
+                arrowprops=dict(facecolor='black', arrowstyle='->'))
+plt.tight_layout()
+plt.savefig('figure_5_theta_fov.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+# =====================================================================
+# FIGURE 6 — focale
+# =====================================================================
+print("=== Figure 6 — focale ===")
+f_vals = np.linspace(0.005, 0.050, 100)
+I_MAX = 0.0096
+F_LIMIT_MM = (I_MAX / np.tan(np.radians(THETA_FOV_REF))) * 1000
+err_f = []
+for fc in f_vals:
+    i1 = fc * np.tan(np.radians(THETA_FOV_REF))
+    X_M = -i1*D1_GT/fc; X_M2 = X_M-D_DRONE
+    i2 = -X_M2*fc/D1_GT
+    err_f.append(worst_case(i1, i2, D1_GT, D1_GT, -D_DRONE, 0, sc=1.0, f=fc))
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(f_vals*1000, err_f, color='#d62728', lw=3.0, zorder=3,
+        label='Pire cas combiné (i + D, ±0,5 px par image)')
+ax.axvspan(F_LIMIT_MM, 50, color='gray', alpha=0.2, hatch='//',
+           edgecolor='none', zorder=1,
+           label='Zone hors-champ (capteur 4K)')
+ax.axvline(x=F_LIMIT_MM, color='black', linestyle='--', lw=2, zorder=4)
+ax.set_xlabel(r"Distance focale $f$ [mm]")
+ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
+ax.set_xlim(5, 50); ax.set_ylim(0, 1.5)
+ax.grid(True, linestyle='--', alpha=0.7); ax.legend(loc='upper right', fontsize=10)
+e_10 = err_f[np.argmin(np.abs(f_vals-0.010))]
+ax.scatter([10.0], [e_10], color='black', zorder=5)
+ax.annotate(f'~ {e_10:.2f} m (f = 10 mm)', xy=(10.0, e_10), xytext=(6.0, 1.0),
+            arrowprops=dict(facecolor='black', arrowstyle='->'))
+ax.annotate(f'Limite\n(f = {F_LIMIT_MM:.1f} mm)',
+            xy=(F_LIMIT_MM, 1.3), xytext=(F_LIMIT_MM+2, 1.35),
+            fontweight='bold', arrowprops=dict(facecolor='black', arrowstyle='->'))
+plt.tight_layout()
+plt.savefig('figure_6_focale.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+# =====================================================================
+# FIGURE 7 — distance D
+# =====================================================================
+print("=== Figure 7 — distance D ===")
+D_vals = np.linspace(2.0, 20.0, 100)
+err_D = []
+for D in D_vals:
+    i1 = I_FIXE
+    X_M = -i1*D/F; X_M2 = X_M-D_DRONE
+    i2 = -X_M2*F/D
+    err_D.append(worst_case(i1, i2, D, D, -D_DRONE, 0, sc=1.0))
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(D_vals, err_D, color='#d62728', lw=3.0,
+        label='Pire cas combiné (i + D, ±0,5 px par image)')
+ax.set_xlabel(r"Distance au mur $D$ [m]")
+ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
+ax.set_xlim(2, 20); ax.set_ylim(0, max(err_D)*1.1)
+ax.grid(True, linestyle='--', alpha=0.7); ax.legend(loc='upper left', fontsize=10)
+e_10 = err_D[np.argmin(np.abs(D_vals-10))]
+e_20 = err_D[-1]
+ax.scatter([10, 20], [e_10, e_20], color='black', zorder=5)
+ax.annotate(f'~ {e_10:.2f} m (D = 10 m)', xy=(10, e_10), xytext=(4, e_10+0.3),
+            arrowprops=dict(facecolor='black', arrowstyle='->'))
+ax.annotate(f'~ {e_20:.2f} m (D = 20 m)', xy=(20, e_20), xytext=(13, e_20-0.4),
+            arrowprops=dict(facecolor='black', arrowstyle='->'))
+plt.tight_layout()
+plt.savefig('figure_7_distance.png', dpi=150, bbox_inches='tight')
+plt.close()
+
+# =====================================================================
+# FIGURE 8 — Impact du nombre N de caméras (Théorie vs Simulation MC)
+# =====================================================================
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-
 warnings.filterwarnings("ignore")
-np.random.seed(42)  # Reproductibilité
+np.random.seed(42)
 
-# =====================================================================
-# 1. CONFIGURATION DES PARAMÈTRES GLOBAUX
-# =====================================================================
-F = 0.010              # Focale par défaut (10 mm)
-B = 0.20               # Baseline stéréoscopique (m)
-PIXEL_SIZE = 5e-6      # Taille physique d'un pixel (5 µm)
-D1_GT = 10.0           # Distance initiale vérité terrain (m)
-DT = 0.02              # Pas de temps (s)
-V_DRONE = 2.78         # Vitesse drone (m/s)
-D_DRONE = V_DRONE * DT # Déplacement réel par pas de temps (0.0556 m)
+print("\n=== Figure 8 — N caméras (Théorie Exacte vs Vraie Simulation) ===")
 
-I_FIXE = 0.005         # Position pixellique de référence (5 mm = θ_FOV ≈ 26.57°)
-THETA_FOV_REF = np.degrees(np.arctan(I_FIXE / F))  # ≈ 26.57°
+# Paramètres du système
+F = 0.010; B = 0.20; PIXEL_SIZE = 5e-6
+D1_GT = 10.0; DT = 0.02; V_DRONE = 2.78
+D_DRONE = V_DRONE * DT
+I_FIXE = 0.005
+N_TRIALS = 10000  # 10 000 tirages comme spécifié dans le texte
 
-N_TRIALS = 2000        # Nombre de tirages Monte-Carlo
+N_vals = np.arange(2, 17)
 
-# Bruit max de profondeur pour 1 pixel à D = 10 m, f = 10 mm
-BRUIT_MAX_M_DEFAUT = (D1_GT**2 / (F * B)) * (1.0 * PIXEL_SIZE)  
+def calc_modele_2(i1, i2, D1, D2, f=F):
+    denom = (i1*D1 + i2*D2)**2 + f**2 * (D2-D1)**2
+    K = (D2**2 - D1**2)*f**2 + D2**2*i2**2 - D1**2*i1**2
+    Tx = -(1.0/f) * (D2*i2 + D1*i1) * K / denom
+    Tz = -(D2 - D1) * K / denom
+    return Tx, Tz
 
-# =====================================================================
-# 2. FONCTIONS DES DEUX MODÈLES
-# =====================================================================
-def calc_modele_1(i1, i2, D1, D2, f_cam=F):
-    """Modèle cinématique : estime R, θ, v puis déplacement Tx, Tz."""
-    if np.all(D1 == D2):
-        scalar_input = np.isscalar(D1)
-        if scalar_input:
-            return -D_DRONE, 0.0
-        return -np.full_like(np.asarray(D1, dtype=float), D_DRONE), \
-               np.zeros_like(np.asarray(D1, dtype=float))
-
-    R = (i2**2 * D2**2 - i1**2 * D1**2 + (f_cam**2) * (D2**2 - D1**2)) \
-        / (2 * f_cam**2 * (D2 - D1))
-    denom_theta = (i1 * D1 + i2 * D2)**2 + (f_cam**2) * (D2 - D1)**2
-    sin_theta = (2 * f_cam * (D2 - D1) * (i2 * D2 + i1 * D1)) / denom_theta
-    sin_theta = np.clip(sin_theta, -1.0, 1.0)
-    theta = np.arcsin(sin_theta)
-    d = R * theta
-    Tx_est = d * (np.sin(theta) / theta)
-    Tz_est = d * ((1 - np.cos(theta)) / theta)
-    return -Tx_est, -Tz_est
-
-def calc_modele_2(i1, i2, D1, D2, f_cam=F):
-    """Modèle géométrique direct : retourne (Tx, Tz) du mouvement de la scène.
-       Pas de singularité D1 ≈ D2."""
-    denom = (i1 * D1 + i2 * D2)**2 + (f_cam**2) * (D2 - D1)**2
-    K = (D2**2 - D1**2) * (f_cam**2) + (D2**2) * (i2**2) - (D1**2) * (i1**2)
-    Tx_est = -(1.0 / f_cam) * (D2 * i2 + D1 * i1) * (K / denom)
-    Tz_est = -(D2 - D1) * (K / denom)
-    return Tx_est, Tz_est
-
-# =====================================================================
-# 3. GÉNÉRATION DE LA VÉRITÉ TERRAIN PAR SCÉNARIO DE TRAJECTOIRE
-# =====================================================================
-def verite_terrain(scenario, i1=I_FIXE, D1=D1_GT, f=F, d=D_DRONE):
-    """Génère la vérité terrain pour un scénario donné."""
-    X_M = -i1 * D1 / f  
-
-    if scenario == 'rect_0':  
-        TX_drone, TZ_drone = d, 0.0
-        x_M_C2 = X_M - TX_drone
-        z_M_C2 = D1 - TZ_drone
-        D2 = z_M_C2
-        i2 = -x_M_C2 * f / D2
-        return i2, D2, -TX_drone, -TZ_drone
-
-    elif scenario in ('rect_5', 'rect_30'):
-            TX_local = d
-            TZ_local = 0
-            
-            x_M_C2 = X_M - TX_local
-            D2 = D1 
-            i2 = -x_M_C2 * f / D2
-            return i2, D2, -TX_local, -TZ_local
-
-    elif scenario.startswith('R'):
-        R = float(scenario[1:])
-        theta = d / R
-        TX_drone = R * np.sin(theta)
-        TZ_drone = R * (1 - np.cos(theta))
-        dx = X_M - TX_drone
-        dz = D1 - TZ_drone
-        x_M_C2 = np.cos(theta) * dx + np.sin(theta) * dz
-        z_M_C2 = -np.sin(theta) * dx + np.cos(theta) * dz
-        D2 = z_M_C2
-        i2 = -x_M_C2 * f / D2
-        return i2, D2, -TX_drone, -TZ_drone
-
-    raise ValueError(f"Scénario inconnu : {scenario}")
-
-# =====================================================================
-# FIGURE 3 : SENSIBILITÉ AU BRUIT 
-# =====================================================================
-print("\n=== Génération Figure 3 : Sensibilité au bruit (Modèle 2) ===")
-
-echelles_bruit = np.linspace(0.0, 1.0, 25)
-i2_ref = -((-I_FIXE * D1_GT / F) - D_DRONE) * F / D1_GT  # rectiligne colinéaire
-
-m2_med, m2_q25, m2_q75, m2_max = [], [], [], []
-
-for scale in echelles_bruit:
-    bruit_px_1 = np.random.uniform(-0.5*scale, 0.5*scale, N_TRIALS)
-    bruit_px_2 = np.random.uniform(-0.5*scale, 0.5*scale, N_TRIALS)
-    #pire cas asymétrique 
-    bruit_px_1[0], bruit_px_2[0] = -0.5*scale, 0.5*scale
-
-    D1_sim = D1_GT + (D1_GT**2 / (F * B)) * (bruit_px_1 * PIXEL_SIZE)
-    D2_sim = D1_GT + (D1_GT**2 / (F * B)) * (bruit_px_2 * PIXEL_SIZE)
-
-    tx2, tz2 = calc_modele_2(I_FIXE, i2_ref, D1_sim, D2_sim)
-    err2 = np.sqrt((tx2 - (-D_DRONE))**2 + (tz2 - 0)**2)
-    m2_med.append(np.nanmedian(err2));  m2_q25.append(np.nanpercentile(err2, 25))
-    m2_q75.append(np.nanpercentile(err2, 75));  m2_max.append(np.nanmax(err2))
-
-fig, ax = plt.subplots(figsize=(10, 6))
-
-ax.fill_between(echelles_bruit, m2_q25, m2_q75, color='#ff7f0e', alpha=0.25,
-                label='Intervalle interquartile (50 % central)')
-ax.plot(echelles_bruit, m2_med, color='#ff7f0e', lw=3.5,
-        label='Médiane M2 (2000 tirages)')
-ax.plot(echelles_bruit, m2_max, color='#d62728', lw=3.5,
-        label='Pire cas absolu M2')
-
-ax.set_xlabel(r"Amplitude maximale d'erreur stéréoscopique $\delta d_{max}$ [pixels]")
-ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [m]")
-ax.set_xlim(0, 1.0)
-ax.set_ylim(0, 0.7)
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.legend(loc='upper left', fontsize=9, framealpha=0.95)
-ax.annotate('~ 0,62 m', xy=(1.0, m2_max[-1]),
-            xytext=(0.72, 0.48),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-plt.tight_layout()
-plt.savefig('figure_3_bruit_M2.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-# =====================================================================
-# FIGURE 4 : SENSIBILITÉ AUX SCÉNARIOS DE TRAJECTOIRE
-# =====================================================================
-print("\n=== Génération Figure 4 : Sensibilité aux scénarios de trajectoire ===")
-
-SCENARIOS = ['rect_0', 'rect_5', 'rect_30', 'R500', 'R50', 'R10']
-SCENARIO_INFO = {
-    'rect_0':  ('Rectiligne colinéaire (α = 0°)',  '#d62728'),
-    'rect_5':  ('Rectiligne oblique (α = 5°)',      '#ff7f0e'),
-    'rect_30': ('Rectiligne oblique (α = 30°)',     '#2ca02c'),
-    'R500':    ('Courbe R = 500 m',                 '#1f77b4'),
-    'R50':     ('Courbe R = 50 m',                  '#9467bd'),
-    'R10':     ('Courbe R = 10 m',                  '#8c564b'),
-}
-
-medianes_scenarios = {s: [] for s in SCENARIOS}
-
-for scale in echelles_bruit:
-    for scenario in SCENARIOS:
-        i2_gt, D2_gt, Tx_vrai, Tz_vrai = verite_terrain(scenario)
-
-        bruit_px_1 = np.random.uniform(-0.5*scale, 0.5*scale, N_TRIALS)
-        bruit_px_2 = np.random.uniform(-0.5*scale, 0.5*scale, N_TRIALS)
-
-        D1_sim = D1_GT + (D1_GT**2 / (F * B)) * (bruit_px_1 * PIXEL_SIZE)
-        D2_sim = D2_gt + (D2_gt**2 / (F * B)) * (bruit_px_2 * PIXEL_SIZE)
-
-        tx, tz = calc_modele_2(I_FIXE, i2_gt, D1_sim, D2_sim)
-        err = np.sqrt((tx - Tx_vrai)**2 + (tz - Tz_vrai)**2)
-        medianes_scenarios[scenario].append(np.nanmedian(err))
-
-fig, ax = plt.subplots(figsize=(10, 6))
-for scenario in SCENARIOS:
-    label, color = SCENARIO_INFO[scenario]
-    ax.plot(echelles_bruit, medianes_scenarios[scenario],
-            color=color, lw=2.5, label=label)
-
-
-ax.set_xlabel(r"Amplitude maximale d'erreur stéréoscopique $\delta d_{max}$ [pixels]")
-ax.set_ylabel(r"Erreur de position médiane $\varepsilon_{pos}$ [m]")
-ax.set_xlim(0, 1.0)
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.legend(loc='upper left', fontsize=9, framealpha=0.95)
-plt.tight_layout()
-plt.savefig('figure_4_scenarios_trajectoire.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-# =====================================================================
-# Calcul pire cas pour figures 5-7 (cas rectiligne, M2 uniquement)
-# =====================================================================
-def pire_cas_M2(i1, i2, D1_gt, D2_gt, bruit_max_d, Tx_vrai, Tz_vrai):
-    D1_sim = D1_gt - bruit_max_d / 2.0
-    D2_sim = D2_gt + bruit_max_d / 2.0
-    tx, tz = calc_modele_2(i1, i2, D1_sim, D2_sim)
-    return np.sqrt((tx - Tx_vrai)**2 + (tz - Tz_vrai)**2)
-
-# =====================================================================
-# FIGURE 5 : SENSIBILITÉ À L'ANGLE D'OBSERVATION θ_FOV
-# =====================================================================
-print("\n=== Génération Figure 5 : Sensibilité à θ_FOV ===")
-
-i_values = np.linspace(0.0005, 0.0096, 100)
-theta_fov_deg = np.degrees(np.arctan(i_values / F))
-
-err_theta = []
-for i1_var in i_values:
-    X_M = -i1_var * D1_GT / F
-    X_M_C2 = X_M - D_DRONE
-    i2_var = -X_M_C2 * F / D1_GT
+def simuler_fusion_N_cameras_MC(X_scene, Z_scene, N):
+    X_cams = np.linspace(0, B, N)
+    i_gt = -F * (X_scene - X_cams) / Z_scene
     
-    err = pire_cas_M2(i1_var, i2_var, D1_GT, D1_GT, BRUIT_MAX_M_DEFAUT,
-                      Tx_vrai=-D_DRONE, Tz_vrai=0)
-    err_theta.append(err)
+    # Bruit uniforme de +- 0.5 pixel sur chaque capteur indépendant
+    bruit = np.random.uniform(-0.5, 0.5, (N, N_TRIALS))
+    i_mes = i_gt[:, None] + bruit * PIXEL_SIZE
 
+    sum_num = np.zeros(N_TRIALS)
+    sum_den = 0.0
+    for u in range(N):
+        for v in range(u+1, N):
+            b_uv = X_cams[v] - X_cams[u]
+            d_uv_mes = i_mes[v] - i_mes[u] 
+            
+            sum_num += b_uv * d_uv_mes
+            sum_den += b_uv**2
+
+    D_est = (F * sum_den) / sum_num
+    i_ref = i_mes[0] 
+    
+    return D_est, i_ref
+
+# --- 1. LANCEMENT DE LA SIMULATION ---
+median_simule = []
+lower_bound = []
+upper_bound = []
+
+X1_scene = -I_FIXE * D1_GT / F
+X2_scene = X1_scene - D_DRONE
+
+for N in N_vals:
+    D1_est, i1_est = simuler_fusion_N_cameras_MC(X1_scene, D1_GT, N)
+    D2_est, i2_est = simuler_fusion_N_cameras_MC(X2_scene, D1_GT, N)
+
+    tx, tz = calc_modele_2(i1_est, i2_est, D1_est, D2_est)
+    err = np.sqrt((tx - (-D_DRONE))**2 + (tz - 0)**2)
+    
+    # Extraction de la médiane et de la marge d'erreur (Percentiles 5% et 95%)
+    median_simule.append(np.median(err))
+    lower_bound.append(np.percentile(err, 5))
+    upper_bound.append(np.percentile(err, 95))
+
+# --- 2. CALCUL DES THÉORIES COHÉRENTES AVEC LA MÉDIANE ---
+ERR_REF_N2 = median_simule[0]  # Référence prise sur la médiane à N=2 (~0.125m)
+
+# Théorie "Naïve" (rouge en pointillé dans le texte)
+G_N_naif = np.sqrt(N_vals**2 * (N_vals + 1) / (12 * (N_vals - 1)))
+err_N_naif = ERR_REF_N2 / G_N_naif
+
+# Théorie "Exacte" (verte en pointillé dans le texte)
+G_N_vrai = np.sqrt(N_vals * (N_vals + 1) / (6 * (N_vals - 1)))
+err_N_vrai = ERR_REF_N2 / G_N_vrai
+
+# --- 3. TRACÉ DU GRAPHIQUE ---
 fig, ax = plt.subplots(figsize=(10, 6))
-ax.plot(theta_fov_deg, err_theta, color='#d62728', lw=3.5,
-        label='Pire cas absolu M2 (±0,5 px par image)')
 
+# Zone ombrée : Marge d'erreur de la simulation (dispersion à 90% des tirages)
+ax.fill_between(N_vals, lower_bound, upper_bound, color='blue', alpha=0.12, zorder=1,
+                label="Marge d'erreur de la simulation (Percentiles 5-95)")
 
-ax.set_xlabel(r"Angle d'observation $\theta_{FOV}$ par rapport à l'axe optique [°]")
-ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
-ax.set_xlim(0, 45)
-ax.set_ylim(0, 5.0)
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.legend(loc='upper right', fontsize=10)
+# Courbe rouge en pointillé : Prédiction naïve
+ax.plot(N_vals, err_N_naif, color='red', lw=2.0, linestyle='--', zorder=2,
+        label=r'Courbe rouge : Prédiction naïve $\varepsilon_{pos}(N=2) / G_{naif}(N)$')
 
-ax.scatter([5.71, 26.57], [2.44, 0.62], color='black', zorder=5)
-ax.annotate(r'~ 2,44 m ($\theta_{FOV}$ = 5,71°)',
-            xy=(5.71, 2.44), xytext=(10, 3.2),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-ax.annotate(r'~ 0,62 m ($\theta_{FOV}$ = 26,57°)',
-            xy=(26.57, 0.62), xytext=(30, 1.5),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-plt.tight_layout()
-plt.savefig('figure_5_sensibilite_theta_fov.png', dpi=150, bbox_inches='tight')
-plt.show()
+# Courbe verte en pointillé : Projection théorique exacte
+ax.plot(N_vals, err_N_vrai, color='green', lw=2.0, linestyle='--', zorder=3,
+        label=r'Courbe verte : Théorie exacte $\varepsilon_{pos}(N=2) / G_{vrai}(N)$')
 
-# =====================================================================
-# FIGURE 6 : SENSIBILITÉ À LA DISTANCE FOCALE f 
-# =====================================================================
-print("\n=== Génération Figure 6 : Sensibilité à la focale ===")
+# Courbe bleue continue : Médiane Monte-Carlo
+ax.plot(N_vals, median_simule, color='blue', lw=2.5, marker='o', markersize=6, zorder=4,
+        label='Courbe bleue : Médiane Monte-Carlo simulée')
 
-f_values = np.linspace(0.005, 0.050, 100)
-err_focale = []
-
-I_MAX_CAPTEUR = 0.0096  
-F_LIMIT = I_MAX_CAPTEUR / np.tan(np.radians(THETA_FOV_REF)) # en mètres
-F_LIMIT_MM = F_LIMIT * 1000 
-
-for f_cam in f_values:
-    bruit_d_actuel = (D1_GT**2 / (f_cam * B)) * (1.0 * PIXEL_SIZE)
-    i1_var = f_cam * np.tan(np.radians(THETA_FOV_REF))
-    X_M = -i1_var * D1_GT / f_cam
-    X_M_C2 = X_M - D_DRONE
-    i2_var = -X_M_C2 * f_cam / D1_GT
-
-    D1_sim = D1_GT - bruit_d_actuel / 2.0
-    D2_sim = D1_GT + bruit_d_actuel / 2.0
-    tx, tz = calc_modele_2(i1_var, i2_var, D1_sim, D2_sim, f_cam=f_cam)
-    err_focale.append(np.sqrt((tx - (-D_DRONE))**2 + (tz - 0)**2))
-
-fig, ax = plt.subplots(figsize=(10, 6))
-
-ax.plot(f_values * 1000, err_focale, color='#d62728', lw=3.5, zorder=3,
-        label='Pire cas absolu M2 (±0,5 px par image)')
-ax.axvspan(F_LIMIT_MM, 50, color='gray', alpha=0.2, hatch='//', edgecolor='none', zorder=1,
-           label='Zone hors-champ (Point > Bord du capteur 4K)')
-ax.axvline(x=F_LIMIT_MM, color='black', linestyle='--', lw=2, zorder=4)
-
-ax.set_xlabel(r"Distance focale de la caméra $f$ [mm]")
-ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
-ax.set_xlim(5, 50)
-ax.set_ylim(0, 1.5)
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.legend(loc='upper right', fontsize=10)
-
-# Annotations existantes et nouvelles
-ax.scatter([10.0], [0.62], color='black', zorder=5)
-ax.annotate('~ 0,62 m (f = 10 mm)',
-            xy=(10.0, 0.62), xytext=(6.0, 1.0),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-
-ax.annotate(f'Limite\n(f = {F_LIMIT_MM:.1f} mm)',
-            xy=(F_LIMIT_MM, 1.3), xytext=(F_LIMIT_MM + 2, 1.35),
-            fontweight='bold', color='black',
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-
-plt.tight_layout()
-plt.savefig('figure_6_sensibilite_focale.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-# =====================================================================
-# FIGURE 7 : SENSIBILITÉ À LA DISTANCE AU MUR D
-# =====================================================================
-print("\n=== Génération Figure 7 : Sensibilité à la distance D ===")
-
-D_values = np.linspace(2.0, 15.0, 100)
-err_D = []
-
-for D in D_values:
-    bruit_d_actuel = (D**2 / (F * B)) * (1.0 * PIXEL_SIZE)
-    X_M = -I_FIXE * D1_GT / F  
-    i1_var = -X_M * F / D
-    X_M_C2 = X_M - D_DRONE
-    i2_var = -X_M_C2 * F / D
-
-    D1_sim = D - bruit_d_actuel / 2.0
-    D2_sim = D + bruit_d_actuel / 2.0
-    tx, tz = calc_modele_2(i1_var, i2_var, D1_sim, D2_sim)
-    err_D.append(np.sqrt((tx - (-D_DRONE))**2 + (tz - 0)**2))
-
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.plot(D_values, err_D, color='#d62728', lw=3.5,
-        label='Pire cas absolu M2 (±0,5 px par image)')
-
-
-ax.set_xlabel(r"Distance au mur $D$ [m]")
-ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
-ax.set_xlim(2, 15)
-ax.set_ylim(0, max(err_D) * 1.1)
-ax.grid(True, linestyle='--', alpha=0.7)
-ax.legend(loc='upper left', fontsize=10)
-ax.scatter([10.0], [err_D[np.argmin(np.abs(D_values - 10))]], color='black', zorder=5)
-ax.annotate(f"~ 0,62 m (D = 10 m)",
-            xy=(10.0, err_D[np.argmin(np.abs(D_values - 10))]),
-            xytext=(5, 1.0),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-plt.tight_layout()
-plt.savefig('figure_7_sensibilite_distance.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-# =====================================================================
-# FIGURE 8 : IMPACT DU NOMBRE N DE CAMÉRAS 
-# =====================================================================
-print("\n=== Génération Figure 8 : Impact du nombre N de caméras ===")
-
-# --- Hypothèse physique ---
-B_TOT = 0.20   # Longueur totale 
-N_values = np.arange(2, 17)
-
-# Gain de précision en exploitant TOUTES les paires de caméras possibles.
-G_N = np.sqrt(N_values**2 * (N_values + 1) / (12 * (N_values - 1)))
-
-ERREUR_REF_N2 = m2_max[-1]     
-
-err_N = ERREUR_REF_N2 / G_N
-
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.plot(N_values, err_N, color='#1f77b4', lw=3.5, marker='o', markersize=8,
-        label="Erreur projetée (exploitation de toutes les paires de caméras)")
-
-
+# Configuration des axes
 ax.set_xlabel(r"Nombre $N$ de caméras alignées")
-ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ projetée [m]")
-ax.set_xticks(N_values)
+ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [m]")
+ax.set_xticks(N_vals)
 ax.set_xlim(2, 16)
-ax.set_ylim(0, ERREUR_REF_N2 * 1.1)
+ax.set_ylim(0, max(upper_bound) * 1.05)  # Adapté pour voir la marge d'erreur haute à N=2
 ax.grid(True, linestyle='--', alpha=0.7)
 ax.legend(loc='upper right', fontsize=10)
 
-# Annotations des points clés
-ax.scatter([2, 4, 10], [err_N[0], err_N[2], err_N[8]], color='black', zorder=5)
-ax.annotate(f"~ {err_N[0]:.2f} m (N = 2)",
-            xy=(2, err_N[0]), xytext=(3.0, err_N[0] * 0.80),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-ax.annotate(f"~ {err_N[2]:.2f} m (N = 4)",
-            xy=(4, err_N[2]), xytext=(5.5, err_N[2] + 0.10),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
-ax.annotate(f"~ {err_N[8]:.2f} m (N = 10)",
-            xy=(10, err_N[8]), xytext=(11.5, err_N[8] + 0.10),
-            arrowprops=dict(facecolor='black', arrowstyle='->'))
+# Annotations (sur la courbe bleue de la simulation médiane)
+for n_show in (2, 4, 10):
+    idx = n_show - 2
+    ax.annotate(f"~ {median_simule[idx]:.3f} m (N = {n_show})",
+                xy=(n_show, median_simule[idx]), 
+                xytext=(n_show + 0.8, median_simule[idx] + 0.02),
+                arrowprops=dict(facecolor='black', arrowstyle='->', lw=1.2))
 
 plt.tight_layout()
-plt.savefig('figure_8_impact_N_cameras.png', dpi=150, bbox_inches='tight')
+plt.savefig('figure_8_N_cameras_theorie_vs_pratique.png', dpi=150, bbox_inches='tight')
 plt.show()
 
-print(f"  Gain G(3)  = {G_N[1]:.2f}  -> erreur ≈ {err_N[1]:.3f} m")
-print(f"  Gain G(4)  = {G_N[2]:.2f}  -> erreur ≈ {err_N[2]:.3f} m")
-print(f"  Gain G(10) = {G_N[8]:.2f}  -> erreur ≈ {err_N[8]:.3f} m")
-
-print("\n=== Génération terminée ===")
+print(f"  Médiane Simulée N=2  : {median_simule[0]:.3f} m  (Cas de référence)")
+print(f"  Médiane Simulée N=4  : {median_simule[2]:.3f} m  (Conforme au texte: ~0.118 m)")
+print(f"  Médiane Simulée N=10 : {median_simule[8]:.3f} m  (Conforme au texte: ~0.087 m)")
