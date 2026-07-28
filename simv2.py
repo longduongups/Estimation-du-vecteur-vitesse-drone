@@ -1,5 +1,5 @@
 """
-Simulation d'odométrie par stéréovision - Master Code Complet
+Simulation d'odométrie par stéréovision - Master Code Complet Corrigé
 --------------------------------------------------------------
 PHASE 0 : Vérification géométrique (Sans Bruit)
 PHASE 1 : Analyse des sources de bruit (i, D, Combiné)
@@ -40,19 +40,19 @@ K_FIXE_POUR_BRUIT = 1
 MC_POUR_BRUIT = 2000
 
 CONFIGS_K = {
-    1: 2000,
-    100: 200,
-    500: 50,
-    1500: 20
+    1: 200,
+    100: 2,
+    500: 1,
+    1500: 1
 }
 
 # Configuration Phase 3 (N caméras avec K fixé)
-K_FIXE_POUR_N = 1
+K_FIXE_POUR_N = 1500
 CONFIGS_N = {
-    2: 2000,
-    4: 2000,
-    8: 2000,
-    16: 2000
+    2: 20,
+    4: 20,
+    8: 20,
+    16: 20
 }
 
 # ============================================================
@@ -77,37 +77,13 @@ def calc_odo(i1_obs, i2_obs, D1_obs, D2_obs, phi_prev, x_prev, z_prev):
 # ============================================================
 # 2. FUSION MULTI-CAMÉRAS SOUS H2 (INVERSE-VARIANCE)
 # ============================================================
-def mesure_profondeur_multi_cam(D_true, N, n_mc, f=FOCALE, b_tot=BASELINE_TOT):
+def mesure_profondeur_multi_cam(D_true, N, delta_p, f=FOCALE, b_tot=BASELINE_TOT):
     """
-    Simule la mesure de profondeur avec N caméras alignées sur b_tot fixe,
-    sous l'hypothèse H2 (capteurs physiquement partagés) avec estimateur
-    par inverse-variance, conformément à la NE Comparaison numérique [2].
-    
-    D_p_est = (f * S_B2) / Sum_(i<j) B_ij * d_ij_obs
-    avec d_ij_obs = d_ij_true + (delta_p_i - delta_p_j)
-    
-    Parameters
-    ----------
-    D_true : ndarray, shape (K_valid,)
-        Profondeurs vraies des K_valid points
-    N      : int >= 2
-        Nombre de caméras alignées
-    n_mc   : int
-        Nombre de tirages Monte-Carlo
-    
-    Returns
-    -------
-    D_obs  : ndarray, shape (n_mc, K_valid)
-        Profondeurs estimées
+    Simule la mesure de profondeur avec N caméras sous hypothèse H2.
+    delta_p est généré en amont avec la technique du Tirage Maximal.
     """
-    K_valid = len(D_true)
     b0 = b_tot / (N - 1)
     
-    # Bruit pixellique INDÉPENDANT sur chaque capteur k, chaque point p, chaque tirage MC
-    delta_p = np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, N, K_valid)) * PIXEL_SIZE
-    
-    # Construction des coefficients :
-    # Sum_(i<j) B_ij * (delta_p_i - delta_p_j) = Sum_k coef_k * delta_p_k
     S_B2 = 0.0
     coef_k = np.zeros(N)
     for i in range(N):
@@ -116,8 +92,7 @@ def mesure_profondeur_multi_cam(D_true, N, n_mc, f=FOCALE, b_tot=BASELINE_TOT):
             S_B2 += B_ij ** 2
             coef_k[i] += B_ij
             coef_k[j] -= B_ij
-    
-    # Estimateur : D_obs = (f * S_B2) / [(f * S_B2)/D_true + Sum_k coef_k * delta_p_k]
+            
     noise_q = np.einsum('k,mkp->mp', coef_k, delta_p)
     denom_est = (f * S_B2) / D_true[None, :] + noise_q
     D_obs = (f * S_B2) / denom_est
@@ -130,6 +105,9 @@ def mesure_profondeur_multi_cam(D_true, N, n_mc, f=FOCALE, b_tot=BASELINE_TOT):
 print("\n" + "="*60)
 print("ÉTAPE 1 : GÉNÉRATION DU MONDE ET DE LA VÉRITÉ TERRAIN")
 print("="*60)
+
+# La vérité terrain est générée une seule fois globalement
+np.random.seed(42) # Fixe pour la forme de la trajectoire
 x_d, z_d, phi_d = [0.0], [10.0], [0.0]
 
 while x_d[-1] < DIST_OBJECTIF:
@@ -157,30 +135,28 @@ x_d, z_d, phi_d = np.array(x_d), np.array(z_d), np.array(phi_d)
 N_PAS = len(x_d) - 1
 print(f" -> Trajectoire globale générée : {N_PAS} itérations.\n")
 
-def genere_profondeur(K):
+def genere_profondeur(K, rng_geo):
     if K == 1: return np.array([D_NOMINAL])
     K_facade = int(K * RATIO_FACADE)
     K_saillie = K - K_facade
-    z_facade = np.random.normal(0, SIGMA_FACADE, K_facade)
+    z_facade = rng_geo.normal(0, SIGMA_FACADE, K_facade)
     masque = (z_facade < -5) | (z_facade > 5)
     while masque.any():
-        z_facade[masque] = np.random.normal(0, SIGMA_FACADE, masque.sum())
+        z_facade[masque] = rng_geo.normal(0, SIGMA_FACADE, masque.sum())
         masque = (z_facade < -5) | (z_facade > 5)
-    z_saillie = np.random.uniform(-5, 5, K_saillie)
+    z_saillie = rng_geo.uniform(-5, 5, K_saillie)
     z_wall = np.concatenate([z_facade, z_saillie])
-    np.random.shuffle(z_wall)
+    rng_geo.shuffle(z_wall)
     return D_NOMINAL + z_wall
 
 # ============================================================
-# 4. LE MOTEUR CENTRAL (accepte N_cam)
+# 4. LE MOTEUR CENTRAL (Strictement Synchronisé)
 # ============================================================
 def run_simulation(K, n_mc, mode_bruit, injecter_bruit=True, N_cam=2):
-    """
-    N_cam : nombre de caméras (>= 2)
-        - N_cam = 2 : paire stéréo simple avec b_tot
-        - N_cam > 2 : fusion multi-baseline par inverse-variance sous H2
-    """
-    np.random.seed(42 + K + 1000 * N_cam)
+    
+    # GÉNÉRATEURS ISOLÉS : Indépendants de N_cam pour garantir l'égalité des chances
+    rng_geo = np.random.RandomState(42 + K)
+    rng_noise = np.random.RandomState(100 + K)
     
     x_c = np.zeros((n_mc, N_PAS + 1))
     z_c = np.zeros((n_mc, N_PAS + 1))
@@ -192,19 +168,17 @@ def run_simulation(K, n_mc, mode_bruit, injecter_bruit=True, N_cam=2):
         x1, z1, phi1 = x_d[n], z_d[n], phi_d[n]
         x2, z2, phi2 = x_d[n + 1], z_d[n + 1], phi_d[n + 1]
 
-        # Génération des K angles avec exclusion centrale
-        angles = np.random.uniform(-np.deg2rad(ANGLE_MAX_DEG), np.deg2rad(ANGLE_MAX_DEG), K)
+        # --- GÉOMÉTRIE (Synchronisée) ---
+        angles = rng_geo.uniform(-np.deg2rad(ANGLE_MAX_DEG), np.deg2rad(ANGLE_MAX_DEG), K)
         mask = np.abs(angles) < np.deg2rad(ANGLE_MIN_DEG)
         while np.any(mask):
-            angles[mask] = np.random.uniform(-np.deg2rad(ANGLE_MAX_DEG), np.deg2rad(ANGLE_MAX_DEG), np.sum(mask))
+            angles[mask] = rng_geo.uniform(-np.deg2rad(ANGLE_MAX_DEG), np.deg2rad(ANGLE_MAX_DEG), np.sum(mask))
             mask = np.abs(angles) < np.deg2rad(ANGLE_MIN_DEG)
 
-        # Génération des profondeurs (distribution mixte 80/20)
-        D_world = genere_profondeur(K)
+        D_world = genere_profondeur(K, rng_geo)
         Xw = x1 + D_world * np.cos(phi1 + angles)
         Zw = z1 + D_world * np.sin(phi1 + angles)
 
-        # Projection dans le repère caméra pour les 2 instants
         dx1, dz1 = Xw - x1, Zw - z1
         Xc1 = dx1 * np.cos(phi1) + dz1 * np.sin(phi1)
         D1_true = dx1 * np.sin(phi1) - dz1 * np.cos(phi1)
@@ -212,7 +186,6 @@ def run_simulation(K, n_mc, mode_bruit, injecter_bruit=True, N_cam=2):
         Xc2 = dx2 * np.cos(phi2) + dz2 * np.sin(phi2)
         D2_true = dx2 * np.sin(phi2) - dz2 * np.cos(phi2)
 
-        # Filtrage de validité
         valid = (np.abs(D1_true) > 0.5) & (np.abs(D2_true) > 0.5)
         Xc1, Xc2 = Xc1[valid], Xc2[valid]
         D1_true, D2_true = D1_true[valid], D2_true[valid]
@@ -226,37 +199,56 @@ def run_simulation(K, n_mc, mode_bruit, injecter_bruit=True, N_cam=2):
         i1_true = -FOCALE * Xc1 / D1_true
         i2_true = -FOCALE * Xc2 / D2_true
 
-        # Bruit sur les coordonnées image
+# --- BRUIT (Tirage Maximal avec Ancrage Physique) ---
         if injecter_bruit:
-            bruit_i1 = np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid)) * PIXEL_SIZE
-            bruit_i2 = np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid)) * PIXEL_SIZE
+            # On tire systématiquement pour 16 caméras
+            bruit_full_1 = rng_noise.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, 16, K_valid)) * PIXEL_SIZE
+            bruit_full_2 = rng_noise.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, 16, K_valid)) * PIXEL_SIZE
+            
+            delta_p1 = np.zeros((n_mc, N_cam, K_valid))
+            delta_p2 = np.zeros((n_mc, N_cam, K_valid))
+            
+            # ANCRAGE : La caméra tout à gauche (x = 0) a TOUJOURS le bruit de l'index 0
+            delta_p1[:, 0, :] = bruit_full_1[:, 0, :]
+            delta_p2[:, 0, :] = bruit_full_2[:, 0, :]
+            
+            # ANCRAGE : La caméra tout à droite (x = b_tot) a TOUJOURS le bruit de l'index 15
+            delta_p1[:, -1, :] = bruit_full_1[:, 15, :]
+            delta_p2[:, -1, :] = bruit_full_2[:, 15, :]
+            
+            # Remplissage des caméras intermédiaires (si N > 2)
+            if N_cam > 2:
+                delta_p1[:, 1:-1, :] = bruit_full_1[:, 1:N_cam-1, :]
+                delta_p2[:, 1:-1, :] = bruit_full_2[:, 1:N_cam-1, :]
+            
+            # L'image directe utilise les capteurs aux extrémités de l'encombrement
+            bruit_i1 = delta_p1[:, 0, :]
+            bruit_i2 = delta_p2[:, -1, :]
         else:
+            delta_p1, delta_p2 = 0.0, 0.0
             bruit_i1, bruit_i2 = 0.0, 0.0
 
-        # Mesure de profondeur : choix entre 2-cam et N-cam
+        # --- FUSION MULTI-CAMÉRAS ---
         if N_cam == 2:
-            # Mode 2-caméras classique : baseline = b_tot
             if injecter_bruit:
-                bruit_d1 = (np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid)) -
-                            np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid))) * PIXEL_SIZE
-                bruit_d2 = (np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid)) -
-                            np.random.uniform(-BRUIT_MAX_PX, BRUIT_MAX_PX, (n_mc, K_valid))) * PIXEL_SIZE
+                bruit_d1 = delta_p1[:, 0, :] - delta_p1[:, 1, :]
+                bruit_d2 = delta_p2[:, 0, :] - delta_p2[:, 1, :]
             else:
                 bruit_d1, bruit_d2 = 0.0, 0.0
+                
             delta_D1 = (D1_true**2 / (FOCALE * BASELINE_TOT)) * bruit_d1
             delta_D2 = (D2_true**2 / (FOCALE * BASELINE_TOT)) * bruit_d2
             D1_noisy = D1_true[None, :] + delta_D1
             D2_noisy = D2_true[None, :] + delta_D2
         else:
-            # Mode N-caméras : fusion inverse-variance sous H2
             if injecter_bruit:
-                D1_noisy = mesure_profondeur_multi_cam(D1_true, N_cam, n_mc)
-                D2_noisy = mesure_profondeur_multi_cam(D2_true, N_cam, n_mc)
+                D1_noisy = mesure_profondeur_multi_cam(D1_true, N_cam, delta_p1)
+                D2_noisy = mesure_profondeur_multi_cam(D2_true, N_cam, delta_p2)
             else:
                 D1_noisy = np.tile(D1_true, (n_mc, 1))
                 D2_noisy = np.tile(D2_true, (n_mc, 1))
 
-        # Sélection du mode de bruit
+        # --- SÉLECTION DU CAS D'ERREUR ---
         if mode_bruit == 'i':
             i1_obs, i2_obs = i1_true[None, :] + bruit_i1, i2_true[None, :] + bruit_i2
             D1_obs, D2_obs = np.tile(D1_true, (n_mc, 1)), np.tile(D2_true, (n_mc, 1))
@@ -267,6 +259,7 @@ def run_simulation(K, n_mc, mode_bruit, injecter_bruit=True, N_cam=2):
             i1_obs, i2_obs = i1_true[None, :] + bruit_i1, i2_true[None, :] + bruit_i2
             D1_obs, D2_obs = D1_noisy, D2_noisy
 
+        # --- MISE À JOUR ODOMÉTRIQUE ---
         x_c[:, n+1], z_c[:, n+1], phi_c[:, n+1] = calc_odo(
             i1_obs, i2_obs, D1_obs, D2_obs, phi_c[:, n], x_c[:, n], z_c[:, n])
         err_c[:, n+1] = np.sqrt((x_c[:, n+1] - x_d[n+1])**2 + (z_c[:, n+1] - z_d[n+1])**2)
@@ -303,17 +296,6 @@ axA.set_title(f"SANS bruit — Vérification géométrique (Erreur finale = {err
 axA.legend(); axA.grid(True, linestyle='--', alpha=0.7)
 plt.tight_layout()
 plt.savefig(filepath('Fig0a_Sans_Bruit_Trajectoire.png'), dpi=120, bbox_inches='tight')
-plt.close()
-
-# Figure 0B : Erreur (échelle log)
-fig, axB = plt.subplots(figsize=(11, 4.5))
-axB.plot(dist_parcourue, err0, color='green', lw=1.5)
-axB.set_xlabel('Distance parcourue [m]'); axB.set_ylabel(r'Erreur $\varepsilon_{pos}$ [m]')
-axB.set_title(f"SANS bruit — Erreur résiduelle numérique (Max = {err0.max():.2e} m)", fontweight='bold')
-axB.set_yscale('log')
-axB.grid(True, linestyle='--', alpha=0.7, which='both')
-plt.tight_layout()
-plt.savefig(filepath('Fig0b_Sans_Bruit_Erreur.png'), dpi=120, bbox_inches='tight')
 plt.close()
 
 
@@ -414,18 +396,6 @@ plt.xlabel("Distance parcourue [m]"); plt.ylabel("Erreur [m]")
 plt.title("Convergence statistique de l'erreur selon K")
 plt.tight_layout(); plt.savefig(filepath("Fig2a_Analyse_K_Erreur.png"), dpi=150); plt.close()
 
-# Graphe trajectoire en fonction de K
-plt.figure(figsize=(12, 7))
-plt.plot(x_d, z_d, 'k', lw=3, label='Vérité terrain')
-for K in [1, 100, 500, 1500]:
-    r = resultats_K[K]
-    plt.plot(r["x"], r["z"], '--', lw=2, color=colors_K[K], label=f"K = {K}")
-plt.scatter([x_d[0]], [z_d[0]], color='green', s=100)
-plt.scatter([x_d[-1]], [z_d[-1]], color='orange', s=100)
-plt.grid(True); plt.legend(); plt.xlabel("X [m]"); plt.ylabel("Z [m]")
-plt.title("Impact de K sur la dérive de la trajectoire")
-plt.tight_layout(); plt.savefig(filepath("Fig2b_Analyse_K_Trajectoire.png"), dpi=150); plt.close()
-
 
 # ==============================================================================
 # PHASE 3 : INFLUENCE DE N (CAMÉRAS)
@@ -470,6 +440,8 @@ plt.figure(figsize=(12, 7))
 plt.plot(x_d, z_d, 'k', lw=3, label='Vérité terrain')
 for N_val in [2, 4, 8, 16]:
     r = resultats_N[N_val]
+    # L'index extrait correspond à la médiane. Toutes les trajectoires vont maintenant 
+    # suivre la MÊME dynamique d'erreur, mais atténuée par N.
     plt.plot(r["x"], r["z"], '--', lw=2, color=colors_N[N_val], label=f"N = {N_val} caméras")
 plt.scatter([x_d[0]], [z_d[0]], color='green', s=100)
 plt.scatter([x_d[-1]], [z_d[-1]], color='orange', s=100)

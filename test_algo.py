@@ -47,13 +47,10 @@ def process_pair(p1_name, p2_name, algo_name, algo):
         None, 
         flags=cv2.DrawMatchesFlags_DRAW_RICH_KEYPOINTS
     )
-    
     output_name = f"resultat_{algo_name}_{p1_name.split('.')[0]}.png"
     cv2.imwrite(os.path.join(folder, output_name), img_matches)
-            
     return len(good_matches)
 
-# Lancement des tests
 print(f"{'Algo':<10} |{'Paire 0':<10} | {'Paire 1':<10} | {'Paire 2':<10} | {'Paire 3':<10} | {'Paire 4':<10} | {'Moyenne K'}")
 print("-" * 80)
 
