@@ -247,7 +247,7 @@ plt.close()
 # FIGURE 5 — θ_FOV
 # =====================================================================
 print("\n=== Figure 5 — θ_FOV ===")
-i_vals = np.linspace(0.0005, 0.0796, 100)
+i_vals = np.linspace(0.0005, 0.0796, 1000)
 theta_vals = np.degrees(np.arctan(i_vals / F))
 err_theta = []
 for i1 in i_vals:
@@ -257,7 +257,7 @@ for i1 in i_vals:
 fig, ax = plt.subplots(figsize=(10, 6))
 ax.plot(theta_vals, err_theta, color='#d62728', lw=3.0,
         label='Pire cas combiné (i + D, ±0,5 px par image)')
-ax.set_xlabel(r"Angle d'observation $\theta_{FOV}$ [°]")
+ax.set_xlabel(r"Angle d'observation $\alpha_p$ [°]")
 ax.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ (pire cas) [m]")
 ax.set_xlim(0, 90); ax.set_ylim(0, 5.0)
 ax.grid(True, linestyle='--', alpha=0.7); ax.legend(loc='upper right', fontsize=10)
@@ -268,7 +268,7 @@ for th_show in (5.71, 26.57):
     e = worst_case(i1, i2, D1_GT, D1_GT, -D_DRONE, 0)
     ax.scatter([th_show], [e], color='black', zorder=5)
     xtxt, ytxt = (10, 3.2) if th_show == 5.71 else (30, 1.5)
-    ax.annotate(f'~ {e:.2f} m ($\\theta_{{FOV}}$ = {th_show:.2f}°)',
+    ax.annotate(f'~ {e:.2f} m ($\\alpha_p$ = {th_show:.2f}°)',
                 xy=(th_show, e), xytext=(xtxt, ytxt),
                 arrowprops=dict(facecolor='black', arrowstyle='->'))
 plt.tight_layout()
@@ -463,3 +463,61 @@ plt.show()
 print(f"  Médiane Simulée N=2  : {median_simule[0]:.3f} m  (Cas de référence)")
 print(f"  Médiane Simulée N=4  : {median_simule[2]:.3f} m  (Conforme au texte: ~0.118 m)")
 print(f"  Médiane Simulée N=10 : {median_simule[8]:.3f} m  (Conforme au texte: ~0.087 m)")
+# =====================================================================
+# FIGURE 7 — sensibilité au bruit : UNE figure, DEUX panneaux
+#   (a) régime dominant : D seul + combiné, en mètres
+#   (b) régime négligeable : i seul, en millimètres
+# =====================================================================
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+# ---- Panneau (a) : D seul + combiné, en MÈTRES ----
+for m in ('D', 'both'):
+    c = COULEURS[m]
+    ax1.fill_between(echelles, resultats[m]['q25'], resultats[m]['q75'],
+                     color=c, alpha=0.15, linewidth=0)
+    ax1.plot(echelles, resultats[m]['med'], color=c, lw=2.5,
+             label=f"Médiane — {LABELS[m]}")
+    ax1.plot(echelles, resultats[m]['wc'], color=c, lw=2.0, linestyle='--',
+             label=f"Pire cas — {LABELS[m]}")
+
+handles1, _ = ax1.get_legend_handles_labels()
+handles1.append(mpatches.Patch(color='gray', alpha=0.3,
+                               label='Intervalle interquartile (Q1–Q3)'))
+ax1.set_xlabel(r"Amplitude max. d'erreur pixellique $\delta d_{max}$ [px]")
+ax1.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [m]")
+ax1.set_xlim(0, 1.0); ax1.set_ylim(0, 0.7)
+ax1.grid(True, linestyle='--', alpha=0.7)
+ax1.legend(handles=handles1, loc='upper left', fontsize=8, framealpha=0.95)
+ax1.set_title("(a) Erreur sur la disparité et combiné — dérive de l'ordre du mètre")
+ax1.annotate(f"~ {resultats['both']['wc'][-1]:.2f} m",
+             xy=(1.0, resultats['both']['wc'][-1]), xytext=(0.72, 0.40),
+             arrowprops=dict(facecolor='black', arrowstyle='->'))
+
+# ---- Panneau (b) : i seul, en MILLIMÈTRES ----
+m = 'i'; c = COULEURS[m]
+med_mm = np.array(resultats[m]['med']) * 1000
+q25_mm = np.array(resultats[m]['q25']) * 1000
+q75_mm = np.array(resultats[m]['q75']) * 1000
+wc_mm  = np.array(resultats[m]['wc'])  * 1000
+
+ax2.fill_between(echelles, q25_mm, q75_mm, color=c, alpha=0.15, linewidth=0)
+ax2.plot(echelles, med_mm, color=c, lw=2.5, label=f"Médiane — {LABELS[m]}")
+ax2.plot(echelles, wc_mm, color=c, lw=2.0, linestyle='--',
+         label=f"Pire cas — {LABELS[m]}")
+
+handles2, _ = ax2.get_legend_handles_labels()
+handles2.append(mpatches.Patch(color='gray', alpha=0.3,
+                               label='Intervalle interquartile (Q1–Q3)'))
+ax2.set_xlabel(r"Amplitude max. d'erreur pixellique $\delta d_{max}$ [px]")
+ax2.set_ylabel(r"Erreur de position $\varepsilon_{pos}$ [mm]")
+ax2.set_xlim(0, 1.0); ax2.set_ylim(0, max(wc_mm) * 1.2)
+ax2.grid(True, linestyle='--', alpha=0.7)
+ax2.legend(handles=handles2, loc='upper left', fontsize=8, framealpha=0.95)
+ax2.set_title("(b) Erreur sur la coordonnée image — dérive de l'ordre du mm")
+ax2.annotate(f"~ {wc_mm[-1]:.1f} mm",
+             xy=(1.0, wc_mm[-1]), xytext=(0.70, wc_mm[-1] * 0.7),
+             arrowprops=dict(facecolor='black', arrowstyle='->'))
+
+plt.tight_layout()
+plt.savefig('figure_7_bruit.png', dpi=150, bbox_inches='tight')
+plt.close(fig)
